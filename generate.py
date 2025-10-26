@@ -8,8 +8,7 @@ TARGET_SEC = 90.0
 MIN_TXNS   = 30
 
 def normalize_name(s: str) -> str:
-    if pd.isna(s):
-        return ""
+    if pd.isna(s): return ""
     s = str(s).strip().lower()
     s = re.sub(r"[^\w\s]", "", s)
     s = re.sub(r"\s+", " ", s)
@@ -20,15 +19,13 @@ def read_tx_csv(path: Path) -> pd.DataFrame:
     df.columns = [c.strip() for c in df.columns]
     df['TransactionTime'] = pd.to_numeric(df.get('TransactionTime'), errors='coerce')
     for col in ['TransactionBy','OrderType','OrderSource','OrderMethod']:
-        if col in df.columns:
-            df[col] = df[col].astype(str)
+        if col in df.columns: df[col] = df[col].astype(str)
     if 'TransactionCompleted' in df.columns:
         df['TransactionCompleted'] = pd.to_datetime(df['TransactionCompleted'], errors='coerce')
     else:
         for alt in ['Transaction Completed','Transaction_Completed','CompletedAt']:
             if alt in df.columns:
-                df['TransactionCompleted'] = pd.to_datetime(df[alt], errors='coerce')
-                break
+                df['TransactionCompleted'] = pd.to_datetime(df[alt], errors='coerce'); break
     return df
 
 def contains_nonstop(series: pd.Series) -> pd.Series:
@@ -36,9 +33,7 @@ def contains_nonstop(series: pd.Series) -> pd.Series:
 
 def filter_tx(df: pd.DataFrame) -> pd.DataFrame:
     is_delivery = df['OrderType'].str.contains('Delivery', case=False, na=False) if 'OrderType' in df.columns else False
-    is_nonstop  = contains_nonstop(df.get('OrderSource', pd.Series("", index=df.index))) | \
-                  contains_nonstop(df.get('OrderType', pd.Series("", index=df.index)))   | \
-                  contains_nonstop(df.get('OrderMethod', pd.Series("", index=df.index)))
+    is_nonstop  = contains_nonstop(df.get('OrderSource', pd.Series("", index=df.index))) |                   contains_nonstop(df.get('OrderType', pd.Series("", index=df.index)))   |                   contains_nonstop(df.get('OrderMethod', pd.Series("", index=df.index)))
     out = df.loc[~is_delivery & ~is_nonstop].copy()
     if 'OrderType' in out.columns and out['OrderType'].str.contains('In-Store', case=False, na=False).any():
         out = out[out['OrderType'].str.contains('In-Store', case=False, na=False)].copy()
@@ -54,7 +49,7 @@ def build_speed(df: pd.DataFrame) -> pd.DataFrame:
     def speed_tier(row):
         if row['Txns'] < MIN_TXNS: return 'Gray'
         if (row['avg_s'] <= 90) or (row['pct_meet'] >= 70): return 'Green'
-        if ((row['avg_s'] > 90 and row['avg_s'] <= 120) or (row['pct_meet'] >= 50 and row['pct_meet'] < 70)): return 'Yellow'
+        if ((row['avg_s'] > 90 and row['avg_s'] <= 120) or (50 <= row['pct_meet'] < 70)): return 'Yellow'
         return 'Red'
     g['Speed_Tier'] = g.apply(speed_tier, axis=1)
     return g
@@ -149,20 +144,30 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     perf_all, p25, p75 = tier_acq(perf_all)
     perf_all['Recommendation'] = perf_all.apply(lambda r: coaching(r['Speed_Tier'], r['Acq_Tier']), axis=1)
 
-    if not speed_peak.empty and not fees.empty and 'TransactionDate' in fees.columns:
-        ff_peak = fees.copy()
-        ff_peak['hour_24'] = ff_peak['TransactionDate'].dt.hour
-        ff_peak = ff_peak[ff_peak['hour_24'].isin(peak_hours)]
-        ff_by_peak = (ff_peak.groupby('Budtender', as_index=False)
-                      .agg(FF_Acq_Peak=('ReceiptID','nunique')))
-        perf_peak = speed_peak.merge(ff_by[['Budtender','FF_Acquisitions']], left_on='TransactionBy', right_on='Budtender', how='left')\
-                              .merge(ff_by_peak, on='Budtender', how='left')
+    if not speed_peak.empty:
+        perf_peak = speed_peak.merge(ff_by[['Budtender','FF_Acquisitions']], left_on='TransactionBy', right_on='Budtender', how='left')
+        if not fees.empty and 'TransactionDate' in fees.columns:
+            ff_pk = fees.copy()
+            ff_pk['hour_24'] = ff_pk['TransactionDate'].dt.hour
+            ff_pk = ff_pk[ff_pk['hour_24'].isin(peak_hours)]
+            ff_pk_by = (ff_pk.groupby('Budtender', as_index=False)
+                        .agg(FF_Acq_Peak=('ReceiptID','nunique')))
+            perf_peak = perf_peak.merge(ff_pk_by, on='Budtender', how='left')
+        else:
+            perf_peak['FF_Acq_Peak'] = np.nan
         perf_peak['Budtender'] = perf_peak['TransactionBy']
         perf_peak['FF_Acq_Peak'] = perf_peak['FF_Acq_Peak'].fillna(0).astype(int)
         perf_peak['FF per 100 (Peak)'] = (perf_peak['FF_Acq_Peak'] / perf_peak['Txns'] * 100.0).replace([np.inf,-np.inf], np.nan).round(3)
         perf_peak['FF Conversion (Peak)'] = (perf_peak['FF_Acq_Peak'] / perf_peak['Txns']).replace([np.inf,-np.inf], np.nan).fillna(0).round(4)
+        def acq_tier_peak(v):
+            if pd.isna(v): return 'Low'
+            if v >= p75: return 'High'
+            if v < p25:  return 'Low'
+            return 'Mid'
+        perf_peak['Acq_Tier_Peak'] = perf_peak['FF per 100 (Peak)'].apply(acq_tier_peak)
+        perf_peak['Recommendation'] = perf_peak.apply(lambda r: coaching(r['Speed_Tier'], r['Acq_Tier_Peak']), axis=1)
     else:
-        perf_peak = pd.DataFrame(columns=['TransactionBy','Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acq_Peak','FF per 100 (Peak)','FF Conversion (Peak)'])
+        perf_peak = pd.DataFrame(columns=['Budtender'])
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -170,69 +175,91 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     with pd.ExcelWriter(excel_out, engine="xlsxwriter") as writer:
         perf_all[['Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acquisitions','FF per 100 txns','FF Conversion Rate','Acq_Tier','Recommendation']].to_excel(writer, index=False, sheet_name="Overall")
         if not perf_peak.empty:
-            perf_peak[['Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acq_Peak','FF per 100 (Peak)','FF Conversion (Peak)']].to_excel(writer, index=False, sheet_name="Peak_3to7pm")
+            perf_peak[['Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acq_Peak','FF per 100 (Peak)','FF Conversion (Peak)','Acq_Tier_Peak','Recommendation']].to_excel(writer, index=False, sheet_name="Peak_3to7pm")
         pd.DataFrame({'FF_per_100_p25_overall':[p25], 'FF_per_100_p75_overall':[p75], 'generated_at':[datetime.now()]}).to_excel(writer, index=False, sheet_name="Thresholds")
 
-    def row_color(speed_t, acq_t):
-        if speed_t == 'Green' and acq_t == 'High': return "#d5f5e3"
-        if speed_t == 'Green': return "#e8f8f5"
-        if speed_t == 'Yellow' and acq_t == 'High': return "#fcf3cf"
-        if speed_t == 'Yellow': return "#fef5e7"
-        if speed_t == 'Red': return "#f5b7b1"
-        return "#eceff1"
 
+def row_color(speed_t, acq_t):
+    if speed_t == 'Green' and acq_t == 'High': return "#d5f5e3"
+    if speed_t == 'Green': return "#e8f8f5"
+    if speed_t == 'Yellow' and acq_t == 'High': return "#fcf3cf"
+    if speed_t == 'Yellow': return "#fef5e7"
+    if speed_t == 'Red': return "#f5b7b1"
+    return "#eceff1"
+
+def html_header(title, sub):
+    return f'''<!DOCTYPE html><html><head><meta charset="utf-8"><title>{title}</title>
+<style>
+body {{ font-family: Arial, Helvetica, sans-serif; margin: 24px; color:#111; }}
+h1 {{ margin: 0 0 8px 0; font-size: 22px; }}
+.sub {{ color:#444; margin-bottom: 14px; }}
+table {{ width:100%; border-collapse: collapse; }}
+th, td {{ padding:8px 10px; border-bottom:1px solid #e6e6e6; text-align:right; font-size: 13px; }}
+th.left, td.left {{ text-align:left; }}
+thead th {{ background:#fafafa; position: sticky; top: 0; }}
+</style></head><body>
+<h1>{title}</h1>
+<div class="sub">{sub}</div>
+<table><thead>'''
+
+def write_htmls(perf_all, perf_peak, out_dir):
+    # Overall
     rows = []
     for _, r in perf_all.sort_values(['Speed_Tier','FF per 100 txns'], ascending=[True, False]).iterrows():
         bg = row_color(r['Speed_Tier'], r['Acq_Tier'])
-        rows.append(f"""
-        <tr style="background:{bg}">
-          <td class="left">{r['Budtender']}</td>
-          <td>{int(r['Txns'])}</td>
-          <td>{r['Avg (mm:ss)']}</td>
-          <td>{r['% ≤ 1:30']:.1f}%</td>
-          <td>{r['Speed_Tier']}</td>
-          <td>{int(r['FF_Acquisitions'])}</td>
-          <td>{r['FF per 100 txns']:.3f}</td>
-          <td>{r['FF Conversion Rate']:.2%}</td>
-          <td>{r['Acq_Tier']}</td>
-          <td class="left">{r['Recommendation']}</td>
-        </tr>""")
-    html_all = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>Speed × FF — Overall</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111} table{width:100%;border-collapse:collapse} th,td{padding:8px 10px;border-bottom:1px solid #e6e6e6;text-align:right;font-size:13px} th.left,td.left{text-align:left} thead th{background:#fafafa;position:sticky;top:0}</style></head><body>
-    <h1>Speed × Frequent Flyer — Overall</h1><table><thead><tr>
-    <th class="left">Budtender</th><th>Txns</th><th>Avg Time</th><th>% ≤ 1:30</th><th>Speed</th><th>FF</th><th>FF / 100</th><th>FF Conversion</th><th>Acq Tier</th><th class="left">Coaching Note</th>
-    </tr></thead><tbody>""" + "".join(rows) + "</tbody></table></body></html>"
-    (out_dir / "one_sheet_overall.html").write_text(html_all, encoding="utf-8")
+        rows.append(f'''
+<tr style="background:{bg}">
+  <td class="left">{r['Budtender']}</td>
+  <td>{int(r['Txns'])}</td>
+  <td>{r['Avg (mm:ss)']}</td>
+  <td>{r['% ≤ 1:30']:.1f}%</td>
+  <td>{r['Speed_Tier']}</td>
+  <td>{int(r['FF_Acquisitions'])}</td>
+  <td>{r['FF per 100 txns']:.3f}</td>
+  <td>{r['FF Conversion Rate']:.2%}</td>
+  <td>{r['Acq_Tier']}</td>
+  <td class="left">{r['Recommendation']}</td>
+</tr>''')
+    overall_html = html_header(
+        "Speed × FF — Overall (Ex-Staff Removed)",
+        "Filters: No Delivery, no “TTA Non Stop”, In-Store only when present. Includes **FF Conversion Rate** and **FF per 100 txns**. Eligible = ≥ 30 txns."
+    ) + '''
+<tr>
+<th class="left">Budtender</th><th>Txns</th><th>Avg Time</th><th>% ≤ 1:30</th><th>Speed</th>
+<th>FF</th><th>FF / 100</th><th>FF Conversion</th><th>Acq Tier</th><th class="left">Coaching Note</th>
+</tr></thead><tbody>''' + "".join(rows) + "\n</tbody></table>\n</body></html>"
+    (out_dir / "speed_x_ff_one_sheet_overall_with_conversion.html").write_text(overall_html, encoding="utf-8")
 
+    # Peak
     if not perf_peak.empty:
         rows_pk = []
         for _, r in perf_peak.sort_values(['Speed_Tier','FF per 100 (Peak)'], ascending=[True, False]).iterrows():
-            rows_pk.append(f"""
-            <tr>
-              <td class="left">{r['Budtender']}</td>
-              <td>{int(r['Txns'])}</td>
-              <td>{r['Avg (mm:ss)']}</td>
-              <td>{r['% ≤ 1:30']:.1f}%</td>
-              <td>{r['Speed_Tier']}</td>
-              <td>{int(r['FF_Acq_Peak'])}</td>
-              <td>{r['FF per 100 (Peak)']:.3f}</td>
-              <td>{r['FF Conversion (Peak)']:.2%}</td>
-            </tr>""")
-        html_pk = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>Speed × FF — Peak 3–7pm</title>
-        <style>body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111} table{width:100%;border-collapse:collapse} th,td{padding:8px 10px;border-bottom:1px solid #e6e6e6;text-align:right;font-size:13px} th.left,td.left{text-align:left} thead th{background:#fafafa;position:sticky;top:0}</style></head><body>
-        <h1>Speed × Frequent Flyer — Peak Hours (3–7pm)</h1><table><thead><tr>
-        <th class="left">Budtender</th><th>Txns</th><th>Avg Time</th><th>% ≤ 1:30</th><th>Speed</th><th>FF (Peak)</th><th>FF / 100 (Peak)</th><th>FF Conversion (Peak)</th>
-        </tr></thead><tbody>""" + "".join(rows_pk) + "</tbody></table></body></html>"
-        (out_dir / "one_sheet_peak.html").write_text(html_pk, encoding="utf-8")
-
-    return {
-        "excel": str(excel_out),
-        "one_sheet_overall": str(out_dir / "one_sheet_overall.html"),
-        "one_sheet_peak": str(out_dir / "one_sheet_peak.html") if not perf_peak.empty else None
-    }
+            bg = row_color(r['Speed_Tier'], r['Acq_Tier_Peak'])
+            rows_pk.append(f'''
+<tr style="background:{bg}">
+  <td class="left">{r['Budtender']}</td>
+  <td>{int(r['Txns'])}</td>
+  <td>{r['Avg (mm:ss)']}</td>
+  <td>{r['% ≤ 1:30']:.1f}%</td>
+  <td>{r['Speed_Tier']}</td>
+  <td>{int(r['FF_Acq_Peak'])}</td>
+  <td>{r['FF per 100 (Peak)']:.3f}</td>
+  <td>{r['FF Conversion (Peak)']:.2%}</td>
+  <td>{r['Acq_Tier_Peak']}</td>
+  <td class="left">{r['Recommendation']}</td>
+</tr>''')
+        peak_html = html_header(
+            "Speed × FF — Peak 3–7pm",
+            "Same filters; hours 15–19 only. Includes **FF Conversion (Peak)**."
+        ) + '''
+<tr>
+<th class="left">Budtender</th><th>Txns</th><th>Avg Time</th><th>% ≤ 1:30</th><th>Speed</th>
+<th>FF (Peak)</th><th>FF / 100 (Peak)</th><th>FF Conversion (Peak)</th><th>Acq Tier (Peak)</th><th class="left">Coaching Note</th>
+</tr></thead><tbody>''' + "".join(rows_pk) + "\n</tbody></table>\n</body></html>"
+        (out_dir / "speed_x_ff_one_sheet_peak_with_conversion.html").write_text(peak_html, encoding="utf-8")
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Speed × Frequent Flyer reports.")
+    parser = argparse.ArgumentParser(description="Generate Speed × Frequent Flyer one-sheets + Excel.")
     parser.add_argument("--tx", default="data/Patient Transaction Time Report.csv", help="Path to transaction time CSV")
     parser.add_argument("--fee-glob", default="data/Fee_*Transactions*.xlsx", help="Glob for fee/donation Excel files")
     parser.add_argument("--exclusions", default="config/exclusions.json", help="JSON file with former_staff list")
@@ -241,8 +268,64 @@ def main():
     args = parser.parse_args()
 
     peak_hours = [int(h.strip()) for h in args.peak_hours.split(",") if h.strip().isdigit()]
-    results = build_views(args.tx, args.fee_glob, args.exclusions, args.out, peak_hours)
-    print("Generated:", results)
+
+    # Build datasets and Excel
+    tx_csv = args.tx
+    fee_glob = args.fee_glob
+    exclusions = args.exclusions
+    out_dir = Path(args.out)
+    # Use helper to build base outputs
+    build_views(tx_csv, fee_glob, exclusions, out_dir, peak_hours)
+
+    # Recompute to render HTMLs (keeps functions modular/simple)
+    tx = read_tx_csv(Path(tx_csv))
+    tx = filter_tx(tx)
+    tx['_bt_norm'] = tx['TransactionBy'].apply(normalize_name)
+    tx['txn_seconds'] = tx['TransactionTime'] * 60.0
+    tx['hour_24'] = tx['TransactionCompleted'].dt.hour if 'TransactionCompleted' in tx.columns else np.nan
+    speed_all = build_speed(tx)
+    speed_peak = build_speed(tx[tx['hour_24'].isin(peak_hours)]) if 'hour_24' in tx.columns else speed_all.iloc[0:0,:].copy()
+
+    fees = read_fee_glob(fee_glob)
+    if not fees.empty and 'Budtender' in fees.columns:
+        fees['_bt_norm'] = fees['Budtender'].apply(normalize_name)
+    ff_by = build_acq(fees) if not fees.empty else pd.DataFrame(columns=['Budtender','FF_Acquisitions','FF_Fee_Total','FF_First','FF_Last'])
+
+    perf_all = speed_all.merge(ff_by, left_on='TransactionBy', right_on='Budtender', how='left')
+    perf_all['Budtender'] = perf_all['TransactionBy']
+    perf_all['FF_Acquisitions'] = perf_all['FF_Acquisitions'].fillna(0).astype(int)
+    perf_all['FF per 100 txns'] = (perf_all['FF_Acquisitions'] / perf_all['Txns'] * 100.0).replace([np.inf,-np.inf], np.nan).round(3)
+    perf_all['FF Conversion Rate'] = (perf_all['FF_Acquisitions'] / perf_all['Txns']).replace([np.inf,-np.inf], np.nan).fillna(0).round(4)
+    perf_all, p25, p75 = tier_acq(perf_all)
+    perf_all['Recommendation'] = perf_all.apply(lambda r: coaching(r['Speed_Tier'], r['Acq_Tier']), axis=1)
+
+    if not speed_peak.empty:
+        perf_peak = speed_peak.merge(ff_by[['Budtender','FF_Acquisitions']], left_on='TransactionBy', right_on='Budtender', how='left')
+        if not fees.empty and 'TransactionDate' in fees.columns:
+            ff_pk = fees.copy()
+            ff_pk['hour_24'] = ff_pk['TransactionDate'].dt.hour
+            ff_pk = ff_pk[ff_pk['hour_24'].isin(peak_hours)]
+            ff_pk_by = (ff_pk.groupby('Budtender', as_index=False)
+                        .agg(FF_Acq_Peak=('ReceiptID','nunique')))
+            perf_peak = perf_peak.merge(ff_pk_by, on='Budtender', how='left')
+        else:
+            perf_peak['FF_Acq_Peak'] = np.nan
+        perf_peak['Budtender'] = perf_peak['TransactionBy']
+        perf_peak['FF_Acq_Peak'] = perf_peak['FF_Acq_Peak'].fillna(0).astype(int)
+        perf_peak['FF per 100 (Peak)'] = (perf_peak['FF_Acq_Peak'] / perf_peak['Txns'] * 100.0).replace([np.inf,-np.inf], np.nan).round(3)
+        perf_peak['FF Conversion (Peak)'] = (perf_peak['FF_Acq_Peak'] / perf_peak['Txns']).replace([np.inf,-np.inf], np.nan).fillna(0).round(4)
+        def acq_tier_peak(v):
+            if pd.isna(v): return 'Low'
+            if v >= p75: return 'High'
+            if v < p25:  return 'Low'
+            return 'Mid'
+        perf_peak['Acq_Tier_Peak'] = perf_peak['FF per 100 (Peak)'].apply(acq_tier_peak)
+        perf_peak['Recommendation'] = perf_peak.apply(lambda r: coaching(r['Speed_Tier'], r['Acq_Tier_Peak']), axis=1)
+    else:
+        perf_peak = pd.DataFrame(columns=['Budtender'])
+
+    write_htmls(perf_all, perf_peak, out_dir)
+    print("Generated HTML and Excel in", out_dir)
 
 if __name__ == "__main__":
     main()
