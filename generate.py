@@ -1,4 +1,3 @@
-
 import argparse, json, os, re, glob
 from pathlib import Path
 import numpy as np
@@ -136,10 +135,11 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     speed_peak = build_speed(tx[tx['hour_24'].isin(peak_hours)]) if 'hour_24' in tx.columns else speed_all.iloc[0:0,:].copy()
 
     fees = read_fee_glob(fee_glob)
-    fees['_bt_norm'] = fees['Budtender'].apply(normalize_name)
-    if excl:
+    if not fees.empty and 'Budtender' in fees.columns:
+        fees['_bt_norm'] = fees['Budtender'].apply(normalize_name)
+    if excl and not fees.empty and '_bt_norm' in fees.columns:
         fees = fees[~fees['_bt_norm'].isin(excl)].copy()
-    ff_by = build_acq(fees)
+    ff_by = build_acq(fees) if not fees.empty else pd.DataFrame(columns=['Budtender','FF_Acquisitions','FF_Fee_Total','FF_First','FF_Last'])
 
     perf_all = speed_all.merge(ff_by, left_on='TransactionBy', right_on='Budtender', how='left')
     perf_all['Budtender'] = perf_all['TransactionBy']
@@ -149,15 +149,12 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     perf_all, p25, p75 = tier_acq(perf_all)
     perf_all['Recommendation'] = perf_all.apply(lambda r: coaching(r['Speed_Tier'], r['Acq_Tier']), axis=1)
 
-    if not speed_peak.empty:
+    if not speed_peak.empty and not fees.empty and 'TransactionDate' in fees.columns:
         ff_peak = fees.copy()
-        if 'TransactionDate' in ff_peak.columns:
-            ff_peak['hour_24'] = ff_peak['TransactionDate'].dt.hour
-            ff_peak = ff_peak[ff_peak['hour_24'].isin(peak_hours)]
-            ff_by_peak = (ff_peak.groupby('Budtender', as_index=False)
-                          .agg(FF_Acq_Peak=('ReceiptID','nunique')))
-        else:
-            ff_by_peak = ff_by.iloc[0:0,:].copy()
+        ff_peak['hour_24'] = ff_peak['TransactionDate'].dt.hour
+        ff_peak = ff_peak[ff_peak['hour_24'].isin(peak_hours)]
+        ff_by_peak = (ff_peak.groupby('Budtender', as_index=False)
+                      .agg(FF_Acq_Peak=('ReceiptID','nunique')))
         perf_peak = speed_peak.merge(ff_by[['Budtender','FF_Acquisitions']], left_on='TransactionBy', right_on='Budtender', how='left')\
                               .merge(ff_by_peak, on='Budtender', how='left')
         perf_peak['Budtender'] = perf_peak['TransactionBy']
@@ -167,7 +164,6 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     else:
         perf_peak = pd.DataFrame(columns=['TransactionBy','Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acq_Peak','FF per 100 (Peak)','FF Conversion (Peak)'])
 
-    # Save Excel
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     excel_out = out_dir / "speed_x_ff_with_peak_and_conversion.xlsx"
@@ -177,7 +173,6 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
             perf_peak[['Budtender','Txns','Avg (mm:ss)','% ≤ 1:30','Speed_Tier','FF_Acq_Peak','FF per 100 (Peak)','FF Conversion (Peak)']].to_excel(writer, index=False, sheet_name="Peak_3to7pm")
         pd.DataFrame({'FF_per_100_p25_overall':[p25], 'FF_per_100_p75_overall':[p75], 'generated_at':[datetime.now()]}).to_excel(writer, index=False, sheet_name="Thresholds")
 
-    # HTML one-sheets
     def row_color(speed_t, acq_t):
         if speed_t == 'Green' and acq_t == 'High': return "#d5f5e3"
         if speed_t == 'Green': return "#e8f8f5"
@@ -237,7 +232,6 @@ def build_views(tx_csv: str, fee_glob: str, exclusions_path: str, out_dir: str, 
     }
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser(description="Generate Speed × Frequent Flyer reports.")
     parser.add_argument("--tx", default="data/Patient Transaction Time Report.csv", help="Path to transaction time CSV")
     parser.add_argument("--fee-glob", default="data/Fee_*Transactions*.xlsx", help="Glob for fee/donation Excel files")
