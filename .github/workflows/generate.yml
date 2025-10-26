@@ -1,0 +1,43 @@
+name: Generate Speed × FF Reports
+
+on:
+  workflow_dispatch:
+    inputs:
+      tx_csv:
+        description: 'Path to transaction time CSV in repo'
+        required: true
+        default: 'data/Patient Transaction Time Report.csv'
+      fee_glob:
+        description: 'Glob for fee/donation Excel files'
+        required: true
+        default: 'data/Fee_*Transactions*.xlsx'
+      exclusions:
+        description: 'Path to exclusions JSON'
+        required: true
+        default: 'config/exclusions.json'
+      peak_hours:
+        description: 'Comma-separated peak hours (24h)'
+        required: true
+        default: '15,16,17,18,19'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Generate reports
+        run: |
+          python scripts/generate.py \
+            --tx "${{ inputs.tx_csv }}" \
+            --fee-glob "${{ inputs.fee_glob }}" \
+            --exclusions "${{ inputs.exclusions }}" \
+            --peak-hours "${{ inputs.peak_hours }}" \
+            --out out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speed-ff-reports
+          path: out/**

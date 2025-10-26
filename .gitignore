@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/*
+!data/.keep
+out/*
+!out/.keep
+.DS_Store
